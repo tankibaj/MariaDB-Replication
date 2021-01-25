@@ -19,7 +19,7 @@ Our goal is create two docker containers with MariaDB server, one will be Master
 ## Clone repository 
 
 ```bash
-git clone git@github.com:tankibaj/mariadb-replication.git . && cd mariadb-replication
+git clone https://github.com/tankibaj/mariadb-replication.git && cd mariadb-replication
 ```
 
 
