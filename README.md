@@ -28,7 +28,7 @@ git clone https://github.com/tankibaj/mariadb-replication.git && cd mariadb-repl
 
 - `bash kickoff.sh`  - [Building Image and Run](https://i.imgur.com/AwIejDo.png) Master, Slave and PHP nodes. 
 - `bash status.sh` - Checkout replication [Status](https://imgur.com/cxnUEYH) on terminal.
-- `bash setupCronJob.sh` - Setup cron job for every minute.
+- `sudo bash setupCronJob.sh` - Setup cron job for every minute.
 - `tail -f /var/log/syslog | grep REPLICATION` - Checkout replication status from [SysLog](https://imgur.com/59f58ho). Make sure you have already configured  `bash setupCronJob.sh`.
 - `bash stopSlave.sh` - Stop Slave node.
 - `bash startSlave.sh` - Start Slave node.
