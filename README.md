@@ -4,7 +4,12 @@
 
 MariaDB is a free, open-source and one of the most popular open-source relational database management system. It is a drop-in replacement for MySQL intended to remain free under the GNU GPL. You will need to increase your MariaDB server's instances and replicate the data on multiple servers when your traffic grows. The Master-Slave replication provides load balancing for the databases. It doesn't use for any failover solution. Master-Slave replication data changes happen on the master server, while the slave server automatically replicates the changes from the master server. This mode will be best suited for data backups.
 
-Our goal is create two docker containers with MariaDB server, one will be Master server and another will be Slave server.
+## Goal
+
+- Create two docker containers with MariaDB server, one will be Master server and another will be Slave server.
+- A simple PHP script to test replication.
+- Every minute scheduled Cron job to check replication health and write health status log and docker exit code into Syslog.
+- If replication fails or stops get a notification via email.
 
 
 
@@ -19,7 +24,7 @@ Our goal is create two docker containers with MariaDB server, one will be Master
 ## Clone repository 
 
 ```bash
-git clone https://github.com/tankibaj/mariadb-replication-docker.git && cd mariadb-replication
+git clone https://github.com/tankibaj/mariadb-replication-docker.git && cd mariadb-replication-docker
 ```
 
 
