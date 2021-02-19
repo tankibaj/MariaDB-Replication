@@ -17,11 +17,11 @@ if [ ! "$(docker ps -a | grep -e ${MASTER_SERVER} -e ${SLAVE_SERVER})" ]; then
     exit 1
 fi
 
-#if [ ! "$(/usr/bin/docker container inspect -f '{{.State.Status}}' ${SLAVE_SERVER})" = "running" ]; then
-#    code=$(/usr/bin/docker container inspect -f '{{.State.ExitCode}}' ${SLAVE_SERVER})
-#    logger -t REPLICATION Replication is not running.... Exited with code $code
-#    exit 1
-#fi
+if [ ! "$(/usr/bin/docker container inspect -f '{{.State.Status}}' ${SLAVE_SERVER})" = "running" ]; then
+   code=$(/usr/bin/docker container inspect -f '{{.State.ExitCode}}' ${SLAVE_SERVER})
+   logger -t REPLICATION Replication is not running.... Exited with code $code
+   exit 1
+fi
 
 execSQL() {
     /usr/bin/docker exec -t $1 mysql -u${MYSQL_ROOT_USER} -p${MYSQL_ROOT_PASSWORD} -e "$2"
