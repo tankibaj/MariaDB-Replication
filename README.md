@@ -20,15 +20,6 @@ MariaDB is a free, open-source and one of the most popular open-source relationa
 - [Manage Docker as a non-root user for Linux](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user)
 
 
-
-## Clone repository 
-
-```bash
-git clone https://github.com/tankibaj/mariadb-replication-docker.git && cd mariadb-replication-docker
-```
-
-
-
 ## Command and Usage
 
 - `bash kickoff.sh`  - [Building Image and Run](https://i.imgur.com/AwIejDo.png) Master, Slave and PHP nodes. 
