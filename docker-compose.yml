@@ -5,42 +5,31 @@ services:
     build:
       context: ./master-image
       dockerfile: Dockerfile
-    container_name: mariadb_master
+    container_name: ${MASTER_SERVER}
     ports:
       - "3306:3306"
     restart: unless-stopped
     env_file:
-      - .docker.env
+      - .env
     networks:
-      replication:
+      replica:
 
   mariadb_slave:
     build:
       context: ./slave-image
       dockerfile: Dockerfile
-    container_name: mariadb_slave
+    container_name: ${SLAVE_SERVER}
     depends_on:
       - "mariadb_master"
     ports:
       - "4406:3306"
     restart: unless-stopped
     env_file:
-      - .docker.env
+      - .env
     networks:
-      replication:
-
-  php:
-    build:
-      context: ./php-image
-      dockerfile: Dockerfile
-    container_name: php
-    depends_on:
-      - "mariadb_master"
-    restart: unless-stopped
-    networks:
-      replication:
+      replica:
 
 
 networks:
-  replication:
+  replica:
     driver: bridge

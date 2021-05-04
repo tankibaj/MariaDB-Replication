@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+
+if [[ ! $(which docker) && $(docker-compose --version) ]]; then
+    echo "Please install docker and docker-compose"
+    exit 1
+fi
+
+export $(grep -v '^#' .env | xargs)
+
+TEXT_REPLICA_EXIST="[WARNING]: Replica already exist!"
+TEXT_REPLICA_NOT_EXIST="[ERROR]: Replica doesn't exist!"
+TEXT_REPLICA_NOT_RUNNING="[WARNING]: Replica is not running. It was exited with code: "
+TEXT_REPLICA_HEALTHY="[INFO]: Replica is healthy"
+TEXT_REPLICA_NOT_HEALTHY="[WARNING]: Replica is not healthy"
+TEXT_CRON_JOB_EXIST="[ERROR]: Job already exist in cron.d"
+TEXT_RUN_AS_ROOT="[ERROR]: Please run as root user to execute the script!"
+TEXT_USERNAME="Enter username to run cron job [root]: "
+TEXT_PROJECT_PATH="Enter project path [/home/ubuntu/replica]: "
+TEXT_INVALID="[ERROR]: Invalid input: "
+LOG_PREFIX="REPLICA "
+
+extractIP() {
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $1
+}
+
+extractNetwork() {
+    docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}} {{$k}} {{end}}' $1
+}
+
+execSQL() {
+    docker exec -i $1 mysql -u${MYSQL_ROOT_USER} -p${MYSQL_ROOT_PASSWORD} -e "$2"
+}
+
+importSQL() {
+    docker exec -i $1 mysql -u${MYSQL_ROOT_USER} -p${MYSQL_ROOT_PASSWORD}
+}
+
+containerExistingCheck() {
+    if [ $(docker ps -a | grep -e ${MASTER_SERVER} -e ${SLAVE_SERVER} | wc -l) = 2 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+sendEmail() {
+    curl --request POST \
+        --url https://api.sendgrid.com/v3/mail/send \
+        --header 'Authorization: Bearer ${SENDGRID_API_KEY}' \
+        --header 'Content-Type: application/json' \
+        --data '{"personalizations":[{"to":[{"email":"devops@example.com","name":"DevOps"}],"subject":"WARNING, REPLICATION BROKEN"}],"content": [{"type": "text/plain", "value": "Hi! Please check mariadb replication ASAP!!!"}],"from":{"email":"replication@example.com","name":"Replication"}}'
+}
+
+run() {
+    if containerExistingCheck; then
+        echo $TEXT_REPLICA_EXIST
+        exit 1
+    fi
+    docker-compose build
+    echo
+    echo
+    docker-compose up -d
+    echo
+    echo
+
+    until execSQL ${MASTER_SERVER} ";" 2>nul; do
+        echo "[Info] Please wait! ${MASTER_SERVER} is getting ready!"
+        sleep 10
+    done
+
+    # Create a new database user for replica
+    execSQL ${MASTER_SERVER} "CREATE USER '${REPLICATION_USER}'@'%' IDENTIFIED BY '${REPLICATION_PASSWORD}'; FLUSH PRIVILEGES;"
+
+    # Grant the replica user full access to the slave server
+    execSQL ${MASTER_SERVER} "GRANT REPLICATION SLAVE ON *.* TO '${REPLICATION_USER}'@'%'; FLUSH PRIVILEGES;"
+
+    echo "[Info] Master has been set up successfully!"
+
+    until execSQL ${SLAVE_SERVER} ";" 2>nul; do
+        echo "[Info] Please wait! ${SLAVE_SERVER} is getting ready!"
+        sleep 10
+    done
+
+    # Configure the slave server to communicate with the master server
+    execSQL ${SLAVE_SERVER} "RESET MASTER; CHANGE MASTER TO
+MASTER_HOST='$(extractIP ${MASTER_SERVER})',
+MASTER_USER='${REPLICATION_USER}',
+MASTER_PASSWORD='${REPLICATION_PASSWORD}',
+MASTER_LOG_FILE='$(execSQL ${MASTER_SERVER} "SHOW MASTER STATUS;" | grep -w master1-bin | cut -f 1)',
+MASTER_LOG_POS=$(execSQL ${MASTER_SERVER} "SHOW MASTER STATUS;" | grep -w master1-bin | cut -f 2); START SLAVE;"
+
+    echo "[Info] Slave has been set up successfully!"
+
+    execSQL ${SLAVE_SERVER} "SHOW SLAVE STATUS \G" | egrep 'Master_Host:|Master_Port:|Slave_(IO|SQL)_Running:|Seconds_Behind_Master:|Last_.*_Error:' | grep -v "Error: $"
+
+}
+
+destroy() {
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+    docker-compose down
+}
+
+status() {
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        logger -t $LOG_PREFIX$TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+
+    if [ ! "$(docker container inspect -f '{{.State.Status}}' ${SLAVE_SERVER})" = "running" ]; then
+        CODE=$(docker container inspect -f '{{.State.ExitCode}}' ${SLAVE_SERVER})
+        echo $TEXT_REPLICA_NOT_RUNNING$CODE
+        logger -t $LOG_PREFIX$TEXT_REPLICA_NOT_RUNNING$CODE
+        # Please set sendgrid api key, before you enable emailing
+        # sendEmail
+        exit 1
+    fi
+
+    status=$(execSQL ${SLAVE_SERVER} "SHOW SLAVE STATUS \G")
+    echo "$status" | egrep 'Master_Host:|Master_Port:|Slave_(IO|SQL)_Running:|Seconds_Behind_Master:|Last_.*_Error:' | grep -v "Error: $"
+    if echo "$status" | grep -qs "Slave_IO_Running: Yes" || echo "$status" | grep -qs "Slave_SQL_Running: Yes" || echo "$status" | grep -qs "Seconds_Behind_Master: 0"; then
+        echo $TEXT_REPLICA_HEALTHY
+        logger -t $LOG_PREFIX$TEXT_REPLICA_HEALTHY
+        exit 0
+    else
+        echo $TEXT_REPLICA_NOT_HEALTHY
+        # Please set sendgrid api key, before you enable emailing
+        # sendEmail
+        logger -t $LOG_PREFIX$TEXT_REPLICA_NOT_HEALTHY
+        exit 1
+    fi
+}
+
+stopSlave() {
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+    docker stop ${SLAVE_SERVER}
+}
+
+startSlave() {
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+    docker start ${SLAVE_SERVER}
+}
+
+cronjob() {
+    [[ $EUID -ne 0 ]] && echo -e $TEXT_RUN_AS_ROOT && exit 1
+
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+
+    if [ -f /etc/cron.d/mariadb_replica_status ]; then
+        echo $TEXT_CRON_JOB_EXIST
+        exit 1
+    fi
+
+    # Check cron package
+    if ! dpkg -s cron >/dev/null 2>&1; then
+        apt install cron
+    fi
+
+    echo
+    read -p "$TEXT_USERNAME" -e -i $USER user
+    until [[ $(grep -c "^$user" /etc/passwd) == 1 ]]; do
+        echo $TEXT_INVALID$user
+        read -p "$TEXT_USERNAME" -e -i $USER user
+    done
+
+    echo
+    read -p "$TEXT_PROJECT_PATH" -e -i $PWD path
+    until [[ -d $path ]]; do
+        echo $TEXT_INVALID$path
+        read -p "$TEXT_PROJECT_PATH" -e -i $PWD path
+    done
+
+    echo "SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Start job every 1 minute
+* * * * * $user cd $path && ./replica -s" >/etc/cron.d/mariadb_replica_status
+}
+
+destroyCronjob() {
+    [[ $EUID -ne 0 ]] && echo -e $TEXT_RUN_AS_ROOT && exit 1
+    rm -ivf /etc/cron.d/mariadb_replica_status
+}
+
+runTest() {
+    if ! containerExistingCheck; then
+        echo $TEXT_REPLICA_NOT_EXIST
+        exit 1
+    fi
+    # Import test SQL file
+    cat dump.sql | importSQL ${MASTER_SERVER}
+
+    if [ ! $(docker images | grep -e ${TEST_CONTAINER} | wc -l) = 1 ]; then
+        docker build php-image -t ${TEST_CONTAINER}:latest
+    fi
+    docker run -d --name ${TEST_CONTAINER} --network $(extractNetwork ${MASTER_SERVER}) ${TEST_CONTAINER}:latest
+}
+
+stopTest() {
+    if [ $(docker ps -a | grep -e ${TEST_CONTAINER} | wc -l) = 1 ]; then
+        docker stop ${TEST_CONTAINER}
+        docker rm -f ${TEST_CONTAINER}
+    fi
+}
+
+help() {
+    local -r flagsTable=$(
+        printf "%s\n" \
+            "-S, --start, start         Run MariaDB master and slave containers" \
+            "-D, --destroy, destroy     Destroy everything related to replica" \
+            "-s, -status, status        Replica status" \
+            "-SS, --stop-slave          Stop MariaDB slave container" \
+            "-ss, --start-slave         Start MariaDB slave container" \
+            "-d, --daemon, daemon       Setup a cron job to check replica health at the one-minute interval." \
+            "-DD, --destroy-daemon      Destroy cron job for replica health check" \
+            "-t, --test, test           Test replica by inseting data in MariaDB master container" \
+            "-T, --stop-test            Stop test" \
+            "-l, --log, log             Replica health staus log" \
+            "-h, --help, help           Display help list"
+
+    )
+    echo -e "$flagsTable"
+}
+
+OPTION=$1
+case "$OPTION" in
+-S | --start | start)
+    run
+    ;;
+-D | --destroy | destroy)
+    destroy
+    stopTest
+    ;;
+-s | --status | status)
+    status
+    ;;
+-SS | --stop-slave)
+    stopSlave
+    ;;
+-ss | --start-slave)
+    startSlave
+    ;;
+-d | --daemon | daemon)
+    cronjob
+    ;;
+-DD | --destroy-daemon)
+    destroyCronjob
+    ;;
+-t | --test | test)
+    runTest
+    ;;
+-T | --stop-test)
+    stopTest
+    ;;
+-l | --log | log)
+    less /var/log/syslog | grep $LOG_PREFIX
+    ;;
+-h | --help | help)
+    help
+    ;;
+*)
+    help
+    exit
+    ;;
+esac
